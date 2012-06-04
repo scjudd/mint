@@ -104,8 +104,8 @@ def get_balances(session):
 
 if __name__ == "__main__":
     from getpass import getpass
-    import os
     import ConfigParser as configparser
+    import os
 
     log.setLevel(logging.INFO)
     log.addHandler(logging.StreamHandler())
