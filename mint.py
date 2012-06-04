@@ -1,8 +1,10 @@
+#!/usr/bin/env python2
+
 from urllib import urlencode
 import cookielib
 import logging
+import lxml.html
 import re
-import time
 import urllib2
 
 log = logging.getLogger("mint")
@@ -30,7 +32,7 @@ class Session(object):
         """Authenticate with mint.com"""
 
         self.email = email
-        self.log.info("Logging in as %s" % email)
+        self.log.debug("Logging in as %s" % email)
 
         url = "https://wwws.mint.com/loginUserSubmit.xevent"
         data = urlencode({
@@ -52,20 +54,87 @@ class Session(object):
         # TODO: check for login error
 
         self.is_authenticated = True
-        self.log.info("Login successful")
+        self.log.debug("Login successful")
 
-def get_balance(session):
-    session.request("https://wwws.mint.com/refreshFILogins.xevent",
-                    "token="+session.token)
+def refreshFILogins(session):
+    """Request mint.com to refresh Financial Institution (FI) data"""
+
+    log.debug("POST /refreshFILogins.xevent")
+    url = "https://wwws.mint.com/refreshFILogins.xevent"
+    return session.request(url, "token="+session.token).read()
+
+def userStatus(session):
+    """Check if mint.com is currently refreshing FI data"""
+
+    log.debug("GET /userStatus.xevent")
+    url = "https://wwws.mint.com/userStatus.xevent"
+    return session.request(url).read()
+
+def htmlFragment(session, task="module-accounts"):
+    """Request an html fragment from mint.com"""
+
+    log.debug("GET /htmlFragment.xevent?task="+task)
+    url = "https://wwws.mint.com/htmlFragment.xevent?task="+task
+    return session.request(url).read()
+
+def get_balances(session):
+    """Get current FI account balances from mint.com"""
+
+    attempts = 0
+    refreshFILogins(session)
 
     while True:
-        status = session.request("https://wwws.mint.com/userStatus.xevent")
-        if "true" in status.read():
+        attempts += 1
+
+        if attempts % 5 == 0: # every 5 attempts
+            refreshFILogins(session)
+
+        if "true" in userStatus(session):
             break
-        time.sleep(1)
 
-    url = "https://wwws.mint.com/htmlFragment.xevent?task=module-accounts"
-    html = session.request(url).read()
+    def account(e):
+        return e.xpath("span/a/text()")[0], e.xpath("span/text()")[0]
 
-    balance_re = re.compile(r"<span class='balance'>([0-9,.$]+)")
-    return balance_re.search(html).group(1)
+    tree = lxml.html.fromstring(htmlFragment(session))
+    total = tree.xpath("//*[@class='balance']/text()")[0].replace("Cash","")
+    accounts = map(account, tree.xpath("//h4"))
+    accounts.append(("TOTAL", total))
+
+    return accounts
+
+if __name__ == "__main__":
+    from getpass import getpass
+    import os
+    import ConfigParser as configparser
+
+    log.setLevel(logging.INFO)
+    log.addHandler(logging.StreamHandler())
+
+    path = os.path.expanduser(os.path.join("~",".mintrc"))
+    config = configparser.ConfigParser()
+
+    if not os.path.exists(path):
+        log.info("No ~/.mintrc found. Creating one.")
+
+        print "\n=== Login Information ==="
+        email = raw_input("Email:    ")
+        password = getpass()
+        print
+
+        config.add_section("user")
+        config.set("user", "email", email)
+        config.set("user", "password", password)
+
+        with open(path, "w") as f:
+            config.write(f)
+
+        os.chmod(path, 0600)
+
+    config.read(path)
+
+    email = config.get("user", "email")
+    password = config.get("user", "password")
+
+    session = Session(email, password)
+    for acct in get_balances(session):
+        print "%s: %s" % (acct[0], acct[1])
