@@ -9,6 +9,12 @@ import urllib2
 
 log = logging.getLogger("mint")
 
+class MintError(Exception):
+    pass
+
+class LoginError(MintError):
+    pass
+
 class Session(object):
     """Used for making authenticated requests to mint.com"""
 
@@ -48,10 +54,11 @@ class Session(object):
 
         response = self.request(url, data).read()
 
+        if "password were incorrect" in response:
+            raise LoginError
+
         token_re = re.compile(r"token&quot;:&quot;([^&].+)")
         self.token = token_re.search(response).group(1)
-
-        # TODO: check for login error
 
         self.is_authenticated = True
         self.log.debug("Login successful")
